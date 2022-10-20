@@ -1,13 +1,13 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.0.38">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
   <GVL Name="GVL" Id="{0de60e34-0e2d-4b10-b51a-624a60cec6ea}">
     <Declaration><![CDATA[VAR_GLOBAL
-	stGroupRef			: AXES_GROUP_REF;
-	stAxis				: ARRAY[1..cAxesCount] OF AXIS_REF;
+	stGroupRef	: AXES_GROUP_REF;
+	stAxis		: ARRAY[1..cAxesCount] OF AXIS_REF;
 END_VAR
 
 VAR_GLOBAL CONSTANT
-	cAxesCount			: UINT:=4;
+	cAxesCount : UINT := 2;
 END_VAR]]></Declaration>
   </GVL>
 </TcPlcObject>

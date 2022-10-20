@@ -1,0 +1,88 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
+  <POU Name="FB_PreparePath" Id="{01c1bf27-fb5f-4369-b17d-b280b39ee3ce}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_PreparePath
+VAR_IN_OUT
+	path : MC_PATH_DATA_REF;
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[]]></ST>
+    </Implementation>
+    <Method Name="AddDwellTime" Id="{703d270e-42cb-4513-9d1f-db9d06b444cd}">
+      <Declaration><![CDATA[METHOD AddDwellTime : UDINT
+VAR_INPUT
+	DwellTime : ST_DwellTime;
+END_VAR
+VAR_INST
+	fbDwellPrep	: MC_DwellTimePreparation;
+	xInit		: BOOL := TRUE;
+	fbMsg		: FB_TcMessage;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF xInit THEN
+	xInit := FALSE;
+	fbMsg.CreateEx(TC_EVENTS.Msg.Msg, 0);
+END_IF
+
+fbDwellPrep(PathData	:= path,
+			DwellTime	:= DwellTime.DwellTime,
+			BufferMode	:= DwellTime.BufferMode,
+			InvokeId	:= DwellTime.InvokeId);
+
+IF fbDwellPrep.Error THEN
+	fbMsg.ipArguments.Clear();
+	fbMsg.ipArguments.AddString('Error: ').AddUDInt(fbDwellPrep.ErrorId).AddString(' on dwell prep').AddString('Invoke ID: ')
+		.AddUDInt(fbDwellPrep.InvokeId);
+END_IF
+
+AddDwellTime := fbDwellPrep.ErrorId;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="AddLinearAbsolute" Id="{fa5777da-b889-4aa6-b046-d0d7e9753a28}">
+      <Declaration><![CDATA[METHOD AddLinearAbsolute : UDINT
+VAR_INPUT
+	LineSegment : ST_LineSegment;
+END_VAR
+VAR_INST
+	fbMoveLinPrep	: MC_MoveLinearAbsolutePreparation;	
+	xInit			: BOOL := TRUE;
+	fbMsg			: FB_TcMessage;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF xInit THEN
+	xInit := FALSE;
+	fbMsg.CreateEx(TC_EVENTS.Msg.Msg, 0);
+END_IF
+
+fbMoveLinPrep(PathData						:= path,
+				Position					:= ADR(LineSegment.TargetPos),
+				PositionCount				:= cAxesCount,
+				Velocity					:= LineSegment.Velocity,
+				Acceleration				:= LineSegment.Acceleration,
+				Deceleration				:= LineSegment.Deceleration,
+				Jerk						:= LineSegment.Jerk,
+				BufferMode					:= LineSegment.BufferMode,
+				TransitionMode				:= LineSegment.TransitionMode,
+				TransitionParameter			:= ADR(LineSegment.TransitionParam),
+				TransitionParameterCount	:= LineSegment.TransitionParameterCount,
+				InvokeId					:= LineSegment.InvokeId);
+
+IF fbMoveLinPrep.Error THEN
+	fbMsg.ipArguments.Clear();
+	fbMsg.ipArguments.AddString('Error: ').AddUDInt(fbMoveLinPrep.ErrorId).AddString(' on move line prep').AddString('Invoke ID: ')
+		.AddUDInt(fbMoveLinPrep.InvokeId);
+	fbMsg.Send(0);
+END_IF
+
+AddLinearAbsolute:=fbMoveLinPrep.ErrorId;]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

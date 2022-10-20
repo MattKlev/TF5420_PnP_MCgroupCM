@@ -1,414 +1,251 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.5">
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.12">
   <POU Name="MAIN" Id="{cef6c1f9-2a01-4b71-81db-f7ed4deb6965}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
-VAR	
-	buffer					: ARRAY[1..4096] OF BYTE;
-	path					: MC_PATH_DATA_REF(ADR(buffer), SIZEOF(buffer));
-	
-	aTargetPos				: ARRAY[1..cAxesCount] OF MC_LREAL;
-	aTransitionParam		: ARRAY[1..2] OF MC_LREAL;
-	
-	fVelFactor				: LREAL := 1.0;
-	
-	fbPower					: FB_PowerAll;
-	fbAddAllAxes			: FB_AddAllAxes;
-	fbGroupEnable			: MC_GroupEnable;
-	fbMoveLinPrep			: MC_MoveLinearAbsolutePreparation;
-	fbMovePath				: MC_MovePath;
-	fbStop					: MC_GroupStop;
-	fbUngroupAxes			: MC_UngroupAllAxes;
-	fbGroupReset			: MC_GroupReset;
-	fbGroupReadStatus		: MC_GroupReadStatus;
-	fbGroupSetOvr			: MC_GroupSetOverride;
-	
-	nState					: INT := -4;
-	nNextState				: INT;
-	bMovePrepError			: BOOL;
-	bPickCycle				: BOOL := TRUE;
-	bExecutePath			: BOOL := TRUE;
-	
-	bUserIncrementStep		: BOOL; // user can go to next step
-	bUserInfiniteMovement 	: BOOL :=TRUE; // user can decide if only one movement is executed or infinite movement.
-	bUserStop				: BOOL; // user triggered stop
-	bUserForceUngroup		: BOOL; // user triggered ungroup axes
-	bUserForceReset			: BOOL; // user triggered reset
+VAR
+	xInit	: BOOL := TRUE;
+	fbMsg	: FB_TcMessage;
+	Step	: (INIT,
+		IDEL,
+		ENABLE_AXIS,
+		ADD_AXIS_TO_GROUP,
+		ENABLE_GROUP,
+		PREPARE_PATH,
+		MOVE_PATH,
+		WAIT_TILL_NO_MOVEMENT,
+		UNGROUP_GROUP,
+		STOPPING,
+		ERROR,
+		RESETING);
+
+	Start, Stop, Reset	: BOOL;
+	Continuous			: BOOL := TRUE;
+	rtStart				: R_TRIG;
+	rtReset				: R_TRIG;
+
+	buffer	: ARRAY[1..4096] OF BYTE;
+	path	: MC_PATH_DATA_REF(ADR(buffer), SIZEOF(buffer));
+
+	fbPreparePath : FB_PreparePath;
+
+	StartPos : ST_LineSegment := (TargetPos := [200.0, 275.0], Velocity := 500.0, TransitionParam := [2(0.0)], InvokeId := 10);
+
+	Dwell : ST_DwellTime := (DwellTime := TIME#5S0MS, InvokeId := 15);
+
+	Point1 : ST_LineSegment := (TargetPos					:= [279.0, 512],
+								Velocity					:= 1600.0,
+								Acceleration				:= 20000.0,
+								Deceleration				:= 20000.0,
+								Jerk						:= 60000.0,
+								TransitionMode				:= MC_TRANSITION_MODE.mcTransModeCornerDistanceAdvanced,
+								TransitionParam				:= [0.0, 0.0],
+								TransitionParameterCount	:= 2,
+								InvokeId					:= 20);
+
+	Point2 : ST_LineSegment := (TargetPos					:= [417.0, 512.0],
+								Velocity					:= 1160.0,
+								Acceleration				:= 20000.0,
+								Deceleration				:= 20000.0,
+								Jerk						:= 60000.0,
+								TransitionMode				:= MC_TRANSITION_MODE.mcTransModeCornerDistanceAdvanced,
+								TransitionParam				:= [20.0, 25.0],
+								TransitionParameterCount	:= 2,
+								InvokeId					:= 30);
+
+	fVelFactor : LREAL := 1.0;
+
+	fbPower			: FB_PowerAll;
+	fbAddAllAxes	: FB_AddAllAxes;
+	fbGroupEnable	: MC_GroupEnable;
+
+	fbMovePath			: MC_MovePath;
+	fbStop				: MC_GroupStop;
+	fbUngroupAxes		: MC_UngroupAllAxes;
+	fbGroupReset		: MC_GroupReset;
+	fbGroupReadStatus	: MC_GroupReadStatus;
+	fbGroupSetOvr		: MC_GroupSetOverride;
+
 END_VAR
 ]]></Declaration>
     <Implementation>
-      <ST><![CDATA[//	Disclaimer
-  	
-//	THIS publication contains statements about the suitability OF our products FOR certain 
-//	areas OF application. These statements are based on typical features OF our products. 
-//	The examples shown in THIS publication are FOR demonstration purposes only. The 
-//	information provided herein should NOT be regarded as specific operation characteristics. 
-//	It is incumbent on the customer TO check AND decide whether a product is suitable FOR use 
-//	in a particular application. We DO NOT give ANY warranty that the source code which is 
-//	made available with this publication is complete or accurate. 
-  	
-//	THE SAMPLE CODE CONTAINED IN THIS PUBLICATION IS PROVIDED “AS IS” WITHOUT WARRANTY OF ANY 
-//	KIND, EITHER EXPRESSED, IMPLIED OR STATUTORY, INCLUDING WITHOUT LIMITATION, ANY WARRANTY 
-//	WITH RESPECT TO NON-INFRINGEMENT, FREEDOM FROM PROPRIETARY RIGHTS OF THIRD PARTIES OR 
-//	FITNESS FOR ANY PARTICULAR PURPOSE. 
-  	
-//	THIS publication may be changed FROM TIME TO TIME without prior notice. No liability 
-//	is assumed FOR errors AND/OR omissions. Our products are described in detail in our 
-//	data sheets AND documentations. Product-specific warnings AND cautions must be observed. 
-//	FOR the latest version OF our data sheets AND documentations visit our website 
-//	(www.beckhoff.de). 
-  	
-//	© Beckhoff Automation GmbH & Co. KG
-  	
-//	The reproduction, distribution AND utilization OF THIS document as well as the 
-//	communication OF its contents TO others without express authorization is prohibited. 
-//	Offenders will be held liable FOR the payment OF damages. All rights reserved in the 
-//	event of the grant of a patent, utility model or design.
-  	
-//	-----------------------------------------------------------------------------------------
-
-//  =========================================================================================
-//  PnpSimpleSample V1.4
-//  =========================================================================================
-
-//  =========================================================================================
-//	Set variable bUserIncrementStep:= TRUE to go to the next step
-//	Variable bUserInfiniteMovement defines if only one movement or infinite
-//	movement is executed.
-//  =========================================================================================
-
-
-
-fbGroupReadStatus(
-	AxesGroup:= stGroupRef , 
-	Enable:= TRUE , 
-	Valid=> , 
-	Busy=> , 
-	GroupMoving=> , 
-	GroupHoming=> , 
-	GroupErrorStop=> , 
-	GroupNotReady=> , 
-	GroupStandby=> , 
-	GroupStopping=> , 
-	GroupDisabled=> , 
-	Error=> , 
-	ErrorId=> );
-IF fbGroupReadStatus.Error THEN
-	nState := 9998;
-ELSIF NOT fbGroupReadStatus.Valid THEN
-	nState := 9999;	
+      <ST><![CDATA[IF xInit THEN
+	xInit := FALSE;
+	fbMsg.CreateEx(TC_EVENTS.Msg.Msg, 0);
+	fbPreparePath(path := path);
 END_IF
-
-fbGroupSetOvr(
-	AxesGroup:= stGroupRef, 
-	Enable:= TRUE, 
-	VelFactor:= fVelFactor , 
-	Enabled=> , 
-	Busy=> , 
-	Error=> , 
-	ErrorId=> , 
-	ActualVelFactor=> );
-
-IF fbGroupSetOvr.Error THEN
-	nState := 9999;
-END_IF
-	
-	
-
 
 fbPower();
 
-CASE nState OF
--4:
-	IF bUserIncrementStep THEN
-		nNextState := nState +1; 
-		nState := 101;
-		fbAddAllAxes(Execute:= FALSE);
-		fbGroupEnable(AxesGroup:=stGroupRef , Execute:=FALSE);
-		fbMovePath(AxesGroup:=stGroupRef ,PathData:=path ,Execute:= FALSE);
-		bMovePrepError := FALSE;
-	END_IF
--3:	
-	fbPower.Enable := TRUE;
-	
-	IF fbPower.Status THEN
-		IF bUserIncrementStep THEN
-			nNextState := nState +1;
-			nState := 101;
+rtStart(CLK := Start);
+
+CASE Step OF
+
+	INIT:
+		fbAddAllAxes(Execute := FALSE);
+		fbGroupEnable(AxesGroup := stGroupRef, Execute := FALSE);
+		fbMovePath(AxesGroup := stGroupRef, PathData := path, Execute := FALSE);
+		Step := IDEL;
+
+	IDEL:
+		IF rtStart.Q THEN
+			Step := ENABLE_AXIS;
 		END_IF
-	ELSIF	fbPower.Error THEN
-		nState := nState +1000;	
-	END_IF
-	
--2:
-	//Add all axes to group
-	fbAddAllAxes(Execute:= TRUE);
-	
-	IF fbAddAllAxes.Done THEN
-		IF bUserIncrementStep THEN
-			fbAddAllAxes(Execute:= FALSE);
-			nNextState := nState +1;
-			nState := 101;
+
+	ENABLE_AXIS:
+		fbPower.Enable := TRUE;
+
+		IF fbPower.Status THEN
+			Step := ADD_AXIS_TO_GROUP;
+		ELSIF fbPower.Error THEN
+			Step := ERROR;
+			fbMsg.ipArguments.Clear();
+			fbMsg.ipArguments.AddString('Error enabling axis');
+			fbMsg.Send(0);
 		END_IF
-	ELSIF fbAddAllAxes.Error THEN
-		nState := nState +1000;
-	END_IF
-	
--1:	
-	//Enable Group
-	fbGroupEnable(AxesGroup:=stGroupRef , Execute:=TRUE);
-	 
-	IF fbGroupEnable.Done THEN
-		IF bUserIncrementStep THEN
-			fbGroupEnable(AxesGroup:=stGroupRef , Execute:=FALSE);
-			nNextState := nState +1;
-			nState := 101;
+
+	ADD_AXIS_TO_GROUP:
+
+		fbAddAllAxes(Execute := TRUE);
+
+		IF fbAddAllAxes.Done THEN
+			fbAddAllAxes(Execute := FALSE);
+			Step := ENABLE_GROUP;
+		ELSIF fbAddAllAxes.Error THEN
+			Step := ERROR;
+			fbMsg.ipArguments.Clear();
+			fbMsg.ipArguments.AddString('Error adding axis to the group');
+			fbMsg.Send(0);
 		END_IF
-	ELSIF fbGroupEnable.Error THEN
-		nState := nState +1000;
-	END_IF
-0:
-	//Fill path table and start execution with fbMovePath
-	IF bUserIncrementStep OR bUserInfiniteMovement THEN
-		IF bPickCycle THEN 
-			//Prepare table (MC_MoveLinearAbsolutePreparation)
-			A_PreparePathPick();
-		ELSE
-			//Prepare table (MC_MoveLinearAbsolutePreparation)	
-			A_PreparePathPlace();
-		END_IF	
-		bPickCycle := NOT bPickCycle;		
-		
-		IF bMovePrepError THEN
-			nState := nState +1000;
-		ELSE
-			fbMovePath(AxesGroup:= stGroupRef, PathData:= path, Execute:= FALSE);
-			IF bUserInfiniteMovement THEN
-				nState := nState +1;
-			ELSIF bUserIncrementStep THEN
-				nNextState := nState + 1;
-				nState := 101;
-			END_IF				
-		END_IF	
-	END_IF	
-	
-1:
-	//Execute prepared movement
-	fbMovePath(
-		AxesGroup:= stGroupRef , 
-		PathData:= path , 
-		Execute:= bExecutePath
-	);
-	
-	IF fbMovePath.Done THEN
-		IF bUserIncrementStep THEN
-			//ungroup axes
-			nNextState := 50;
-			nState := 101;
-			fbMovePath(AxesGroup:= stGroupRef, PathData:= path, Execute:= FALSE);
-		ELSIF bUserInfiniteMovement THEN
-			nState := nState -1;
-			fbMovePath(AxesGroup:= stGroupRef, PathData:= path, Execute:= FALSE);
+
+	ENABLE_GROUP:
+
+		fbGroupEnable(AxesGroup := stGroupRef, Execute := TRUE);
+
+		IF fbGroupEnable.Done THEN
+			fbGroupEnable(AxesGroup := stGroupRef, Execute := FALSE);
+			Step := PREPARE_PATH;
+		ELSIF fbGroupEnable.Error THEN
+			Step := ERROR;
+			fbMsg.ipArguments.Clear();
+			fbMsg.ipArguments.AddString('Error: ').AddUDInt(fbGroupEnable.ErrorId).AddString(' enabling the group');
+			fbMsg.Send(0);
 		END_IF
-	ELSIF fbMovePath.Error THEN
-		nState := nState + 1000;	
-	END_IF
-20:
-	fbStop(AxesGroup:=stGroupRef, Execute:= FALSE);
-	fbStop(AxesGroup:=stGroupRef, Execute:= TRUE, Jerk:= MC_IGNORE);
-	nState := nState + 1;
-21:
-	fbStop(AxesGroup:=stGroupRef,Execute:= TRUE);
-	IF fbStop.Done THEN
-		IF bUserIncrementStep THEN
-			fbStop(AxesGroup:=stGroupRef, Execute:= FALSE);
-			nNextState := 0;
-			nState := 101;
-		END_IF 		
-	ELSIF fbStop.Error THEN
-		nState := nState +1000;
-	END_IF
-50:
-	//Disable group and remove all axes 
-	fbUngroupAxes(AxesGroup:= stGroupRef, Execute:= FALSE);
-	//Check that axes are not moving else we will get a position jump
-	IF fbGroupReadStatus.GroupStandby OR fbGroupReadStatus.GroupErrorStop OR fbGroupReadStatus.GroupNotReady THEN
-		fbUngroupAxes(AxesGroup:= stGroupRef, Execute:= TRUE);
-		nState := nState + 1;
-	END_IF	
-51:
-	fbUngroupAxes(
-		AxesGroup:= stGroupRef , 
-		Execute:= TRUE, 
-		Done=> , 
-		Busy=> , 
-		Error=> , 
-		ErrorId=> );
-	
-	IF fbUngroupAxes.Done THEN
-		IF bUserIncrementStep THEN
-			nNextState := -4;
-			nState := 101;
+
+	PREPARE_PATH:
+		A_PreparePath();
+		Step := MOVE_PATH;
+
+	MOVE_PATH:
+
+		fbMovePath(AxesGroup	:= stGroupRef,
+					PathData	:= path,
+					Execute		:= TRUE);
+
+		IF fbMovePath.Done THEN
+			fbMovePath(AxesGroup := stGroupRef, PathData := path, Execute := FALSE);
+			Step := WAIT_TILL_NO_MOVEMENT;
+		ELSIF fbMovePath.Error THEN
+			Step := ERROR;
+			fbMsg.ipArguments.Clear();
+			fbMsg.ipArguments.AddString('Error: ').AddUDInt(fbMovePath.ErrorId).AddString(' on move path');
+			fbMsg.Send(0);
 		END_IF
-	ELSIF fbUngroupAxes.Error THEN
-		nState := nState +1000;
-	END_IF
-80:
-	fbGroupReset(AxesGroup:= stGroupRef , Execute:= FALSE);
-	fbGroupReset(AxesGroup:= stGroupRef , Execute:= TRUE);
-	nState := nState +1;
-81:	
-	fbGroupReset(
-		AxesGroup:= stGroupRef , 
-		Execute:= , 
-		Done=> , 
-		Busy=> , 
-		Error=> , 
-		ErrorId=> );
-	
-	IF fbGroupReset.Done THEN
-		IF bUserIncrementStep THEN
-			IF fbGroupReadStatus.GroupDisabled THEN
-				nNextState := -4;
+
+	WAIT_TILL_NO_MOVEMENT:
+		//Check that axes are not moving else we will get a position jump
+		IF fbGroupReadStatus.GroupStandby OR fbGroupReadStatus.GroupErrorStop OR fbGroupReadStatus.GroupNotReady THEN
+			fbUngroupAxes(AxesGroup := stGroupRef, Execute := FALSE);
+
+			IF NOT Continuous THEN
+				Step := UNGROUP_GROUP;
 			ELSE
-				nNextState := 0;
+				Step := PREPARE_PATH;
 			END_IF
-			nState := 101;
-		END_IF				
-	END_IF	
-101:
-	IF (bUserIncrementStep) THEN				
-		nState := nNextState;
-		bUserIncrementStep := FALSE;
-	END_IF
-1000..9999:
-	;//Error				
+
+		END_IF
+
+	UNGROUP_GROUP:
+		fbUngroupAxes(AxesGroup	:= stGroupRef,
+						Execute	:= TRUE);
+
+		IF fbUngroupAxes.Done THEN
+			Step := IDEL;
+		ELSIF fbUngroupAxes.Error THEN
+			Step := ERROR;
+			fbMsg.ipArguments.Clear();
+			fbMsg.ipArguments.AddString('Error: ').AddUDInt(fbUngroupAxes.ErrorId).AddString(' on ungroup');
+			fbMsg.Send(0);
+		END_IF
+
+	STOPPING:
+		Stop := FALSE;
+		fbStop(AxesGroup := stGroupRef, Execute := TRUE, Jerk := MC_IGNORE);
+
+		IF fbStop.Done THEN
+			fbStop(AxesGroup := stGroupRef, Execute := FALSE);
+			Step := IDEL;
+		ELSIF fbStop.Error THEN
+			Step := ERROR;
+			fbMsg.ipArguments.Clear();
+			fbMsg.ipArguments.AddString('Error: ').AddUDInt(fbStop.ErrorId).AddString(' on stopping');
+			fbMsg.Send(0);
+		END_IF
+
+	ERROR:
+		IF rtReset.Q THEN
+			Step := RESETING;
+		END_IF
+
+	RESETING:
+		fbGroupReset(AxesGroup	:= stGroupRef,
+					Execute		:= TRUE);
+
+		IF fbGroupReset.Done THEN
+			fbGroupReset(AxesGroup := stGroupRef, Execute := FALSE);
+
+			IF fbGroupReadStatus.GroupDisabled THEN
+				Step := IDEL;
+			ELSE
+				Step := INIT;
+			END_IF
+		END_IF
 END_CASE
 
-IF bUserStop THEN
-	nState := 20;
-	bUserStop := FALSE;
+IF Stop AND Step <> STOPPING THEN
+	Step := STOPPING;
 END_IF
-IF bUserForceUngroup THEN
-	nState := 50;
-	bUserForceUngroup := FALSE;
+
+fbGroupReadStatus(AxesGroup := stGroupRef, Enable := TRUE);
+
+IF fbGroupReadStatus.Error THEN
+	Step := ERROR;
+ELSIF NOT fbGroupReadStatus.Valid THEN
+	Step := ERROR;
 END_IF
-IF bUserForceReset THEN
-	nState := 80;
-	bUserForceReset := FALSE;
+
+fbGroupSetOvr(AxesGroup := stGroupRef, Enable := TRUE, VelFactor := fVelFactor);
+
+IF fbGroupSetOvr.Error THEN
+	Step := ERROR;
 END_IF
 ]]></ST>
     </Implementation>
-    <Action Name="A_PreparePathPick" Id="{dcb08973-a115-429b-89e2-ef77d8cbb861}">
-      <Implementation>
-        <ST><![CDATA[path.ClearPath();  //Clear nodes that were in path
-
-fbMoveLinPrep.Position						:= ADR(aTargetPos); //pointer to position array
-fbMoveLinPrep.PositionCount 				:= cAxesCount; //number of axes in group
-fbMoveLinPrep.TransitionParameter			:= ADR (aTransitionParam); //pointer to transition parameter array
-fbMoveLinPrep.TransitionParameterCount		:= 2; //number of transition parameters, has to be set always 2
-fbMoveLinPrep.BufferMode					:= mcBlendingPrevious;
-fbMoveLinPrep.TransitionMode				:= mcTransModeCornerDistanceAdvanced;
-//Set dynamics to default values of the axes
-fbMoveLinPrep.Acceleration					:= MC_DEFAULT;
-fbMoveLinPrep.Deceleration					:= MC_DEFAULT;
-fbMoveLinPrep.Jerk							:= MC_DEFAULT;
-
-//1st node
-aTargetPos[1]				:= 0;
-aTargetPos[2]				:= 0;
-aTargetPos[3]				:= 300;
-aTargetPos[4]				:= 0;
-aTransitionParam[1]			:= 0; //blending distance on previous segment, no influence here
-aTransitionParam[2]			:= 0; //blending distance on this segment, no influence here
-fbMoveLinPrep(PathData:= path , Velocity:= 3000, InvokeId:= 10);
-bMovePrepError := bMovePrepError OR fbMoveLinPrep.Error;
-
-aTargetPos[1]				:= 700;
-aTargetPos[2]				:= 100;
-aTargetPos[3]				:= 300;
-aTargetPos[4]				:= 90;
-aTransitionParam[1]			:= 200; //blending distance on previous segment (InvokeId=10), defines when to leave line
-aTransitionParam[2]			:= 400; //blending distance on this segment, defines latest positionn to be back  on line of InovkeId=20 
-fbMoveLinPrep(PathData:= path , Velocity:= 3000, InvokeId:= 20); 
-bMovePrepError := bMovePrepError OR fbMoveLinPrep.Error;
-
-aTargetPos[1]				:= 750;
-aTargetPos[2]				:= 150;
-aTargetPos[3]				:= 0;
-aTargetPos[4]				:= 90;
-aTransitionParam[1]			:= 250; 
-aTransitionParam[2]			:= 250;
-fbMoveLinPrep(PathData:= path , Velocity:= 3000, InvokeId:= 30);
-bMovePrepError := bMovePrepError OR fbMoveLinPrep.Error;
-]]></ST>
-      </Implementation>
-    </Action>
-    <Action Name="A_PreparePathPlace" Id="{807eb52d-d6c5-48fb-b361-4b935b271568}">
+    <Action Name="A_PreparePath" Id="{b4fd4fc4-5b35-4468-a059-2e7dbf9aee1b}">
       <Implementation>
         <ST><![CDATA[path.ClearPath(); //Clear nodes that were in path
 
-fbMoveLinPrep.Position						:= ADR(aTargetPos); //pointer to position array
-fbMoveLinPrep.PositionCount 				:= cAxesCount; //number of axes in group
-fbMoveLinPrep.TransitionParameter			:= ADR (aTransitionParam); //pointer to transition parameter array
-fbMoveLinPrep.TransitionParameterCount		:= 2; //number of transition parameters, has to be set always 2
-fbMoveLinPrep.BufferMode					:= mcBlendingPrevious;
-fbMoveLinPrep.TransitionMode				:= mcTransModeCornerDistanceAdvanced;
-fbMoveLinPrep.Acceleration					:= MC_DEFAULT;
-fbMoveLinPrep.Deceleration					:= MC_DEFAULT;
-fbMoveLinPrep.Jerk							:= MC_DEFAULT;
+//Start Position
+fbPreparePath.AddLinearAbsolute(LineSegment := StartPos);
 
-aTargetPos[1]				:= 700;
-aTargetPos[2]				:= 100;
-aTargetPos[3]				:= 300;
-aTargetPos[4]				:= 90;
-aTransitionParam[1]			:= 0; //blending distance on previous segment, no influence here
-aTransitionParam[2]			:= 0; //blending distance on this segment, no influence here
-fbMoveLinPrep(PathData:= path , Velocity:= 3000, InvokeId:= 15);
-bMovePrepError := bMovePrepError OR fbMoveLinPrep.Error; 
+//Dwell
+fbPreparePath.AddDwellTime(DwellTime := Dwell);
 
-aTargetPos[1]				:= 0;
-aTargetPos[2]				:= 0;
-aTargetPos[3]				:= 300;
-aTargetPos[4]				:= 0;
-aTransitionParam[1]			:= 200; //blending distance on previous segment (InvokeId=10), defines when to leave line
-aTransitionParam[2]			:= 400; //blending distance on this segment, defines latest positionn to be back  on line of InovkeId=20
-fbMoveLinPrep(PathData:= path , Velocity:= 3000, InvokeId:= 25);
-bMovePrepError := bMovePrepError OR fbMoveLinPrep.Error;
+//Point 1
+fbPreparePath.AddLinearAbsolute(LineSegment := Point1);
 
-aTargetPos[1]				:= 0;
-aTargetPos[2]				:= 0;
-aTargetPos[3]				:= 0;
-aTargetPos[4]				:= 0;
-aTransitionParam[1]			:= 200; 
-aTransitionParam[2]			:= 250;
-fbMoveLinPrep(PathData:= path , Velocity:= 3000, InvokeId:= 35);
-bMovePrepError := bMovePrepError OR fbMoveLinPrep.Error;
-
-]]></ST>
+//Point 2
+fbPreparePath.AddLinearAbsolute(LineSegment := Point2);]]></ST>
       </Implementation>
     </Action>
-    <LineIds Name="MAIN">
-      <LineId Id="337" Count="27" />
-      <LineId Id="335" Count="1" />
-      <LineId Id="3" Count="24" />
-      <LineId Id="281" Count="0" />
-      <LineId Id="292" Count="4" />
-      <LineId Id="282" Count="8" />
-      <LineId Id="298" Count="3" />
-      <LineId Id="297" Count="0" />
-      <LineId Id="28" Count="1" />
-      <LineId Id="34" Count="85" />
-      <LineId Id="250" Count="0" />
-      <LineId Id="121" Count="95" />
-      <LineId Id="2" Count="0" />
-    </LineIds>
-    <LineIds Name="MAIN.A_PreparePathPick">
-      <LineId Id="2" Count="39" />
-      <LineId Id="1" Count="0" />
-    </LineIds>
-    <LineIds Name="MAIN.A_PreparePathPlace">
-      <LineId Id="2" Count="38" />
-      <LineId Id="1" Count="0" />
-    </LineIds>
   </POU>
 </TcPlcObject>
